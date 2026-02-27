@@ -1,0 +1,56 @@
+import { z } from 'zod';
+import { USER_ROLES, USER_ROLES_VALUES } from '../../constants/user.constants.js';
+
+// Register schema
+export const registerSchema = z.object({
+  name: z.string()
+    .min(2, 'Name must be at least 2 characters')
+    .max(100, 'Name must not exceed 100 characters'),
+
+  email: z.string()
+    .pipe(z.email('Invalid email address')),
+
+  password: z.string()
+    .min(8, 'Password must be at least 8 characters')
+    .max(32, 'Password must not exceed 32 characters')
+    .regex(/[a-z]/, 'Password must contain at least one lowercase letter')
+    .regex(/[A-Z]/, 'Password must contain at least one uppercase letter')
+    .regex(/[0-9]/, 'Password must contain at least one number'),
+
+  role: z.enum(USER_ROLES_VALUES, {
+    error: 'Invalid user role',
+  }),
+});
+
+// Login schema
+export const loginSchema = z.object({
+  email: z.string()
+    .pipe(z.email('Invalid email address')),
+
+  password: z.string()
+    .min(1, 'Password is required'),
+});
+
+// Forgot password schema
+export const forgotPasswordSchema = z.object({
+  email: z.string()
+    .pipe(z.email('Invalid email address')),
+});
+
+// Reset password schema
+export const resetPasswordSchema = z.object({
+  token: z.string()
+    .min(1, 'Token is required'),
+
+  password: z.string()
+    .min(8, 'Password must be at least 8 characters')
+    .max(32, 'Password must not exceed 32 characters')
+    .regex(/[a-z]/, 'Password must contain at least one lowercase letter')
+    .regex(/[A-Z]/, 'Password must contain at least one uppercase letter')
+    .regex(/[0-9]/, 'Password must contain at least one number'),
+});
+
+// Email verification schema (query params)
+export const emailVerificationSchema = z.object({
+  token: z.string().min(1, 'Token is required'),
+});

@@ -1,0 +1,159 @@
+// This is your Prisma schema file,
+// learn more about it in the docs: https://pris.ly/d/prisma-schema
+
+// Looking for ways to speed up your queries, or scale easily with your serverless or edge functions?
+// Try Prisma Accelerate: https://pris.ly/cli/accelerate-init
+
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+}
+
+// ============================================
+// Auth Tables
+// ============================================
+
+// User Role Enum
+enum UserRole {
+  STUDENT
+  INSTITUTION_ADMIN
+  SUPER_ADMIN
+}
+
+// Institution Status Enum
+enum InstitutionStatus {
+  PENDING
+  APPROVED
+  BLOCKED
+}
+
+// User Model
+model User {
+  id             String   @id @default(cuid())
+  name           String
+  email          String   @unique
+  password_hash  String
+  role           UserRole @default(STUDENT)
+  isApproved     Boolean  @default(false)
+  isVerified     Boolean  @default(false)
+  institution_id String?
+  created_at     DateTime @default(now())
+  updated_at     DateTime @updatedAt
+
+  // Relations
+  institution             Institution?             @relation(fields: [institution_id], references: [id], onDelete: SetNull)
+  ownedWebsites           Website[]                @relation("WebsiteOwner")
+  passwordResetTokens     PasswordResetToken[]
+  emailVerificationTokens EmailVerificationToken[]
+
+  @@index([email])
+  @@index([institution_id])
+  @@index([role])
+  @@map("users")
+}
+
+// Institution Model
+model Institution {
+  id         String            @id @default(cuid())
+  name       String
+  email      String            @unique
+  status     InstitutionStatus @default(PENDING)
+  created_at DateTime          @default(now())
+  updated_at DateTime          @updatedAt
+
+  // Relations
+  users    User[]
+  websites Website[]
+
+  @@index([email])
+  @@index([status])
+  @@map("institutions")
+}
+
+// Password Reset Token Model
+model PasswordResetToken {
+  id         String   @id @default(cuid())
+  userId     String
+  token_hash String   @unique
+  expiresAt  DateTime
+  isUsed     Boolean  @default(false)
+  created_at DateTime @default(now())
+
+  // Relations
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([token_hash])
+  @@index([expiresAt])
+  @@map("password_reset_tokens")
+}
+
+// Email Verification Token Model
+model EmailVerificationToken {
+  id         String   @id @default(cuid())
+  userId     String
+  token_hash String   @unique
+  expiresAt  DateTime
+  created_at DateTime @default(now())
+
+  // Relations
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([token_hash])
+  @@index([expiresAt])
+  @@map("email_verification_tokens")
+}
+
+// ============================================
+// Website Tables
+// ============================================
+
+// Website Status Enum
+enum WebsiteStatus {
+  ACTIVE
+  PUBLISHED
+  DELETED
+}
+
+// Website Model
+model Website {
+  id             String        @id @default(cuid())
+  name           String
+  institution_id String
+  owner_id       String
+  subdomain      String        @unique
+  status         WebsiteStatus @default(ACTIVE)
+  settings_id    String?       @unique
+  created_at     DateTime      @default(now())
+  updated_at     DateTime      @updatedAt
+
+  // Relations
+  institution Institution @relation(fields: [institution_id], references: [id], onDelete: Cascade)
+  owner       User        @relation("WebsiteOwner", fields: [owner_id], references: [id], onDelete: Cascade)
+  settings    Settings?   @relation(fields: [settings_id], references: [id], onDelete: SetNull)
+
+  @@index([institution_id])
+  @@index([owner_id])
+  @@index([subdomain])
+  @@index([status])
+  @@map("websites")
+}
+
+// Settings Model (for website configuration)
+model Settings {
+  id           String   @id @default(cuid())
+  seo          Json? // {title, description, favicon}
+  contact      Json? // {email, phone, address}
+  social_links Json? // {facebook, twitter, linkedin}
+  created_at   DateTime @default(now())
+  updated_at   DateTime @updatedAt
+
+  // Relations
+  website Website?
+
+  @@map("settings")
+}
