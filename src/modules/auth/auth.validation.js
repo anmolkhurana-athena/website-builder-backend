@@ -1,5 +1,4 @@
 import { z } from 'zod';
-import { USER_ROLES, USER_ROLES_VALUES } from '../../constants/user.constants.js';
 
 // Register schema
 export const registerSchema = z.object({
@@ -16,10 +15,6 @@ export const registerSchema = z.object({
     .regex(/[a-z]/, 'Password must contain at least one lowercase letter')
     .regex(/[A-Z]/, 'Password must contain at least one uppercase letter')
     .regex(/[0-9]/, 'Password must contain at least one number'),
-
-  role: z.enum(USER_ROLES_VALUES, {
-    error: 'Invalid user role',
-  }),
 });
 
 // Login schema

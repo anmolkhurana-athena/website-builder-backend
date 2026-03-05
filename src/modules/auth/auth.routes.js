@@ -9,6 +9,7 @@ import {
   resetPasswordSchema,
   emailVerificationSchema,
 } from './auth.validation.js';
+import { authenticate } from '../../middlewares/auth.middleware.js';
 
 const router = express.Router();
 const authController = new AuthController();
@@ -30,6 +31,7 @@ router.post(
 // GET /auth/logout - Logout user
 router.get(
   '/logout',
+  authenticate,
   authController.logout
 );
 
@@ -52,6 +54,12 @@ router.get(
   '/email-verification',
   validateRequest(emailVerificationSchema, 'query'),
   authController.verifyEmail
+);
+
+// POST /auth/refresh-token - Refresh access token
+router.post(
+  '/refresh-token',
+  authController.refreshToken
 );
 
 export default router;

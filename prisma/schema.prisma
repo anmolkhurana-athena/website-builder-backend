@@ -18,59 +18,37 @@ datasource db {
 
 // User Role Enum
 enum UserRole {
-  STUDENT
-  INSTITUTION_ADMIN
-  SUPER_ADMIN
-}
-
-// Institution Status Enum
-enum InstitutionStatus {
-  PENDING
-  APPROVED
-  BLOCKED
+  USER
+  ADMIN
 }
 
 // User Model
 model User {
-  id             String   @id @default(cuid())
-  name           String
-  email          String   @unique
-  password_hash  String
-  role           UserRole @default(STUDENT)
-  isApproved     Boolean  @default(false)
-  isVerified     Boolean  @default(false)
-  institution_id String?
-  created_at     DateTime @default(now())
-  updated_at     DateTime @updatedAt
+  id            String   @id @default(cuid())
+  name          String
+  email         String   @unique
+  password_hash String
+  role          UserRole @default(USER)
+
+  isActive   Boolean @default(true)
+  isVerified Boolean @default(false)
+
+  lastLoginAt          DateTime?
+  lastPasswordChangeAt DateTime?
+
+  created_at DateTime  @default(now())
+  updated_at DateTime  @updatedAt
+  deleted_at DateTime?
 
   // Relations
-  institution             Institution?             @relation(fields: [institution_id], references: [id], onDelete: SetNull)
   ownedWebsites           Website[]                @relation("WebsiteOwner")
   passwordResetTokens     PasswordResetToken[]
   emailVerificationTokens EmailVerificationToken[]
+  refreshTokens           RefreshToken[]
 
   @@index([email])
-  @@index([institution_id])
-  @@index([role])
+  @@index([deleted_at])
   @@map("users")
-}
-
-// Institution Model
-model Institution {
-  id         String            @id @default(cuid())
-  name       String
-  email      String            @unique
-  status     InstitutionStatus @default(PENDING)
-  created_at DateTime          @default(now())
-  updated_at DateTime          @updatedAt
-
-  // Relations
-  users    User[]
-  websites Website[]
-
-  @@index([email])
-  @@index([status])
-  @@map("institutions")
 }
 
 // Password Reset Token Model
@@ -108,38 +86,60 @@ model EmailVerificationToken {
   @@map("email_verification_tokens")
 }
 
+// Refresh Token Model
+model RefreshToken {
+  id         String   @id @default(cuid())
+  userId     String
+  token_hash String   @unique
+  sessionId  String
+  expiresAt  DateTime
+  isRevoked  Boolean  @default(false)
+  replacedBy String? // token_hash of the new token that replaces this one
+  created_at DateTime @default(now())
+
+  // Relations
+  user User @relation(fields: [userId], references: [id], onDelete: Cascade)
+
+  @@index([userId])
+  @@index([token_hash])
+  @@index([expiresAt])
+  @@map("refresh_tokens")
+}
+
 // ============================================
 // Website Tables
 // ============================================
 
 // Website Status Enum
 enum WebsiteStatus {
-  ACTIVE
+  DRAFT
   PUBLISHED
   DELETED
 }
 
 // Website Model
 model Website {
-  id             String        @id @default(cuid())
-  name           String
-  institution_id String
-  owner_id       String
-  subdomain      String        @unique
-  status         WebsiteStatus @default(ACTIVE)
-  settings_id    String?       @unique
-  created_at     DateTime      @default(now())
-  updated_at     DateTime      @updatedAt
+  id            String        @id @default(cuid())
+  name          String
+  owner_id      String
+  status        WebsiteStatus @default(DRAFT)
+  settings_id   String?       @unique
+  thumbnail_url String?
+
+  currentDraftVersionId     String? // references the current draft version of the website
+  currentPublishedVersionId String? // references the current published version of the website
+
+  created_at DateTime  @default(now())
+  updated_at DateTime  @updatedAt
+  deleted_at DateTime?
 
   // Relations
-  institution Institution @relation(fields: [institution_id], references: [id], onDelete: Cascade)
-  owner       User        @relation("WebsiteOwner", fields: [owner_id], references: [id], onDelete: Cascade)
-  settings    Settings?   @relation(fields: [settings_id], references: [id], onDelete: SetNull)
+  owner    User      @relation("WebsiteOwner", fields: [owner_id], references: [id], onDelete: Cascade)
+  settings Settings?
 
-  @@index([institution_id])
   @@index([owner_id])
-  @@index([subdomain])
   @@index([status])
+  @@index([deleted_at])
   @@map("websites")
 }
 
@@ -153,7 +153,7 @@ model Settings {
   updated_at   DateTime @updatedAt
 
   // Relations
-  website Website?
+  website Website @relation(fields: [id], references: [settings_id], onDelete: Cascade)
 
   @@map("settings")
 }

@@ -2,8 +2,11 @@ import express from 'express';
 import apiRoutes from './modules/api.routes.js';
 import cors from 'cors';
 import cookieParser from 'cookie-parser';
+import { initRedis } from './config/redis-client.js';
 
 const app = express();
+
+await initRedis();
 
 app.use(cors());
 app.use(express.json());

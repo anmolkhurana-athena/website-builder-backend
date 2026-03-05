@@ -17,16 +17,23 @@ class UserDao {
   }
 
   async listUsers(filters = {}) {
-    const { page = 1, limit = 10, role, isApproved, isVerified, institution_id, search } = filters;
+    const {
+      page = 1, limit = 10,
+      role, isActive, isVerified,
+      search, created_after
+    } = filters;
 
     const skip = (page - 1) * limit;
 
     const where = {};
 
     if (role) where.role = role;
-    if (typeof isApproved === 'boolean') where.isApproved = isApproved;
+    if (typeof isActive === 'boolean') where.isActive = isActive;
     if (typeof isVerified === 'boolean') where.isVerified = isVerified;
-    if (institution_id) where.institution_id = institution_id;
+
+    if (created_after) {
+      where.created_at = { gte: new Date(created_after) };
+    }
 
     if (search) {
       where.OR = [
@@ -66,20 +73,6 @@ class UserDao {
   async deleteUser(userId) {
     return await prismaClient.user.delete({
       where: { id: userId },
-    });
-  }
-
-  async approveUser(userId) {
-    return await prismaClient.user.update({
-      where: { id: userId },
-      data: { isApproved: true },
-    });
-  }
-
-  async blockUser(userId, blocked = true) {
-    return await prismaClient.user.update({
-      where: { id: userId },
-      data: { isApproved: !blocked }, // block/unblock by toggli
     });
   }
 }

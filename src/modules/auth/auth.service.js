@@ -6,8 +6,12 @@ import crypto from 'crypto';
 import {
   PASSWORD_RESET_TOKEN_EXPIRY_HOURS,
   EMAIL_VERIFICATION_TOKEN_EXPIRY_HOURS,
+  REFRESH_TOKEN_EXPIRY_MS,
+  AUTH_REDIS_EXPIRY_SECONDS,
 } from '../../constants/auth.constants.js';
-import { USER_ROLES } from '../../constants/user.constants.js';
+import cacheService from '../../services/cache.service.js';
+import { generateJWTPayload, generateSessionPayload } from '../../builders/payload.builder.js';
+import { generateAuthSessionKey } from '../../builders/redis-key.builder.js';
 
 class AuthService {
   constructor() {
@@ -25,7 +29,7 @@ class AuthService {
   }
 
   async register(data) {
-    const { name, email, password, role } = data;
+    const { name, email, password } = data;
 
     // Check if user already exists
     const existingUser = await this.authDao.findUserByEmail(email);
@@ -36,8 +40,8 @@ class AuthService {
     // Hash password
     const password_hash = await hashPassword(password);
 
-    // Prepare user data
-    const userData = { name, email, password_hash, role };
+    // Set default role and verification status
+    const userData = { name, email, password_hash };
 
     let user = await this.authDao.createUser(userData);
 
@@ -65,7 +69,7 @@ class AuthService {
 
     // Find user by email
     const user = await this.authDao.findUserByEmail(email, { include_password_hash: true });
-    if (!user) {
+    if (!user || !user.isActive) {
       throw new Error('Invalid email or password');
     }
 
@@ -75,22 +79,55 @@ class AuthService {
       throw new Error('Invalid email or password');
     }
 
-    // Generate tokens
-    const payload = {
-      id: user.id,
-      email: user.email,
-      role: user.role,
-    };
+    await this.authDao.updateUser(user.id, { lastLoginAt: new Date() });
 
-    const accessToken = generateAccessToken(payload);
+    const refreshToken = this._generateRandomToken();
+    const refreshTokenHash = this._hashToken(refreshToken);
+    const refreshTokenExpiresAt = new Date(Date.now() + REFRESH_TOKEN_EXPIRY_MS);
+
+    const sessionId = crypto.randomUUID();
+    const sessionKey = generateAuthSessionKey(user.id, sessionId);
+
+    await this.authDao.createRefreshToken({
+      userId: user.id,
+      token_hash: refreshTokenHash,
+      sessionId: sessionId,
+      expiresAt: refreshTokenExpiresAt,
+    });
+
+    const sessionPayload = generateSessionPayload(user, refreshTokenHash);
+
+    await cacheService.set(sessionKey, sessionPayload, AUTH_REDIS_EXPIRY_SECONDS);
+
+    // Generate tokens
+    const payload = generateJWTPayload(user, sessionId);
+    const accessToken = generateAccessToken(payload, sessionId);
 
     const userWithoutPassword = { ...user };
     delete userWithoutPassword.password_hash;
 
     return {
       message: 'Login successful',
-      accessToken,
+      accessToken, refreshToken,
       user: userWithoutPassword,
+    };
+  }
+
+  async logout(userId, refreshToken, sessionId) {
+    // Revoke current refresh token for the user
+    const refreshTokenHash = this._hashToken(refreshToken);
+    const refreshTokenRecord = await this.authDao.findRefreshToken(refreshTokenHash);
+
+    if (refreshTokenRecord) {
+      await this.authDao.revokeRefreshToken(refreshTokenRecord.id);
+    }
+
+    // Clear session by sessionId from Redis
+    const sessionKey = generateAuthSessionKey(userId, sessionId);
+    await cacheService.del(sessionKey);
+
+    return {
+      message: 'Logout successful',
     };
   }
 
@@ -116,7 +153,6 @@ class AuthService {
       userId: user.id,
       token_hash: tokenHash,
       expiresAt,
-      isUsed: false,
     });
 
     // Send password reset email
@@ -135,8 +171,9 @@ class AuthService {
 
     // Find the reset token
     const resetToken = await this.authDao.findPasswordResetToken(tokenHash);
+    const user = resetToken?.user;
 
-    if (!resetToken) {
+    if (!resetToken || !user?.isActive) {
       throw new Error('Invalid or expired reset token');
     }
 
@@ -146,6 +183,13 @@ class AuthService {
     // Update user password and mark token as used
     await this.authDao.updateUserPassword(resetToken.userId, password_hash);
     await this.authDao.usePasswordResetToken(resetToken.id);
+
+    // Revoke all refresh tokens for the user
+    await this.authDao.revokeAllRefreshTokens(resetToken.userId);
+
+    // Clear all sessions for the user
+    const sessionKeyPattern = generateAuthSessionKey(resetToken.userId, '*');
+    await cacheService.clear(sessionKeyPattern);
 
     return {
       message: 'Password reset successful. You can now login with your new password',
@@ -163,6 +207,12 @@ class AuthService {
       throw new Error('Invalid or expired verification token');
     }
 
+    // Find user by ID
+    const user = await this.authDao.findUserById(verificationToken.userId);
+    if (!user || !user.isActive) {
+      throw new Error('Invalid verification token');
+    }
+
     // Mark user as verified
     await this.authDao.updateUser(verificationToken.userId, { isVerified: true });
 
@@ -171,7 +221,55 @@ class AuthService {
     };
   }
 
+  async refreshToken(refreshToken, userId) {
+    const refreshTokenHash = this._hashToken(refreshToken);
+
+    const refreshTokenRecord = await this.authDao.findRefreshToken(refreshTokenHash);
+    const user = refreshTokenRecord?.user;
+
+    if (!refreshTokenRecord || !user.isActive) {
+      throw new Error('Invalid or revoked refresh token');
+    }
+
+    if (refreshTokenRecord?.isRevoked) {
+      // Handle Replay Attack
+      const oldSessionKey = generateAuthSessionKey(refreshTokenRecord.userId, refreshTokenRecord.sessionId);
+      await cacheService.del(oldSessionKey);
+      throw new Error('Refresh token has been revoked. Please login again');
+    }
+
+    await this.authDao.revokeRefreshToken(refreshTokenRecord.id);
+
+    const sessionId = refreshTokenRecord.sessionId;
+    const sessionKey = generateAuthSessionKey(user.id, sessionId);
+
+    const newRefreshToken = this._generateRandomToken();
+    const newRefreshTokenHash = this._hashToken(newRefreshToken);
+    const refreshTokenExpiresAt = new Date(Date.now() + REFRESH_TOKEN_EXPIRY_MS);
+    await this.authDao.createRefreshToken({
+      userId: user.id,
+      token_hash: newRefreshTokenHash,
+      sessionId: sessionId,
+      expiresAt: refreshTokenExpiresAt,
+    });
+
+    // Update session in Redis with new refresh token hash and expiry
+    const sessionPayload = generateSessionPayload(user, newRefreshTokenHash);
+    await cacheService.set(sessionKey, sessionPayload, AUTH_REDIS_EXPIRY_SECONDS);
+
+    // Generate new access token
+    const payload = generateJWTPayload(user, sessionId);
+    const accessToken = generateAccessToken(payload);
+
+    return {
+      accessToken,
+      refreshToken: newRefreshToken,
+      user: refreshTokenRecord.user,
+    };
+  }
+
   async cleanupExpiredTokens() {
+    await this.authDao.deleteExpiredRefreshTokens();
     await this.authDao.deleteExpiredEmailVerificationTokens();
     await this.authDao.deleteExpiredPasswordResetTokens();
   }

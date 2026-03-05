@@ -1,7 +1,6 @@
 export const USER_ROLES = {
-    SUPER_ADMIN: 'SUPER_ADMIN',
-    INSTITUTION_ADMIN: 'INSTITUTION_ADMIN',
-    STUDENT: 'STUDENT',
+    ADMIN: 'ADMIN',
+    USER: 'USER',
 }
 
 export const USER_ROLES_VALUES = Object.values(USER_ROLES);

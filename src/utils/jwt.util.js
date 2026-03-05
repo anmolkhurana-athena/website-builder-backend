@@ -2,7 +2,7 @@ import jwt from "jsonwebtoken";
 import dotenv from "dotenv";
 import { TOKEN_EXPIRY } from "../constants/auth.constants.js";
 
-dotenv.config();
+dotenv.config({ quiet: true });
 
 export const generateAccessToken = (payload) => {
   const expiresIn = TOKEN_EXPIRY.ACCESS_TOKEN;

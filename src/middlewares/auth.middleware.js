@@ -1,7 +1,7 @@
 import { verifyToken } from '../utils/jwt.util.js';
-import prismaClient from '../config/prisma.js';
+import cacheService from '../services/cache.service.js';
+import { generateAuthSessionKey } from '../builders/redis-key.builder.js';
 import { USER_ROLES } from '../constants/user.constants.js';
-import { hasPermission } from '../constants/rbac.constants.js';
 
 /**
  * Authentication middleware
@@ -25,28 +25,31 @@ export const authenticate = async (req, res, next) => {
     }
 
     // Fetch user profile from database
-    const user = await prismaClient.user.findUnique({
-      where: { id: decoded.id },
-    });
+    const sessionId = decoded.sessionId;
+    const sessionKey = generateAuthSessionKey(decoded.userId, sessionId);
+    const sessionData = await cacheService.get(sessionKey);
 
-    if (!user) {
-      return res.status(401).json({ error: 'User not found' });
+    if (!sessionData) {
+      return res.status(401).json({ error: 'Session expired. Please login again' });
     }
 
-    // verified and approved checks can be added here if needed in the future, as per business requirements
+    const user = {
+      id: decoded.userId,
+      role: decoded.role,
+      refreshTokenId: decoded.refreshTokenId,
+    };
+
+    // verified check can be added here if needed in the future, as per business requirements
 
     // // Check if user is verified
     // if (!user.isVerified) {
     //   return res.status(403).json({ error: 'Please verify your email before logging in' });
     // }
 
-    // // Check if user is approved
-    // if (!user.isApproved) {
-    //   return res.status(403).json({ error: 'Your account is pending approval' });
-    // }
-
     // Attach user to request context
     req.user = user;
+    req.sessionId = sessionId;
+
     next();
 
   } catch (error) {
@@ -59,55 +62,16 @@ export const authenticate = async (req, res, next) => {
  * Role-based authorization middleware
  * Checks if the authenticated user has the required role(s)
  */
-export const authorize = (allowedRoles) => {
+export const authorize = (roles = []) => {
   return (req, res, next) => {
     if (!req.user) {
       return res.status(401).json({ error: 'Unauthorized. Please login to continue' });
     }
 
-    if (!allowedRoles.includes(req.user.role)) {
+    if (!roles.includes(req.user.role)) {
       return res.status(403).json({ error: 'You do not have permission to access this resource' });
     }
 
     next();
-  };
-};
-
-/**
- * Permission-based authorization middleware
- * Checks if the authenticated user has permission for a specific action on a resource
- */
-export const checkPermission = (resource, action) => {
-  return (req, res, next) => {
-    if (!req.user) {
-      return res.status(401).json({ error: 'Unauthorized. Please login to continue' });
-    }
-
-    if (!hasPermission(req.user.role, resource, action)) {
-      return res.status(403).json({ error: 'You do not have permission to perform this action' });
-    }
-
-    next();
-  };
-};
-
-/**
- * Institution-membership check middleware
- */
-export const checkInstitutionMembership = () => {
-  return async (req, res, next) => {
-    try {
-      const user = req.user;
-      const institutionId = req.params.id;
-
-      if (user.role !== USER_ROLES.SUPER_ADMIN && user.institutionId !== institutionId) {
-        return res.status(403).json({ error: 'You do not have permission to access this institution resource' });
-      }
-
-      next();
-    } catch (error) {
-      console.error('Institution membership check error:', error);
-      return res.status(500).json({ error: 'Internal server error' });
-    }
   };
 };

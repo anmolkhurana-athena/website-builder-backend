@@ -1,10 +1,15 @@
 import UserDao from './user.dao.js';
+import AuthDao from '../auth/auth.dao.js';
 import { hashPassword, comparePassword } from '../../utils/password.util.js';
+import cacheService from '../../services/cache.service.js';
+import { generateAuthSessionKey } from '../../builders/redis-key.builder.js';
 import { USER_ROLES } from '../../constants/user.constants.js';
+import { is } from 'zod/v4/locales';
 
 class UserService {
   constructor() {
     this.userDao = new UserDao();
+    this.authDao = new AuthDao();
   }
 
   async getProfile(userId) {
@@ -48,170 +53,103 @@ class UserService {
     return { message: 'Password changed successfully' };
   }
 
-  async listUsers(currentUser, filters) {
-    // Super Admin can view all users
-    if (currentUser.role === USER_ROLES.SUPER_ADMIN) {
-      return await this.userDao.listUsers(filters);
+  async deactivateAccount(userId) {
+    const user = await this.userDao.findUserById(userId);
+    if (!user || !user.isActive) {
+      throw new Error('User not found');
     }
-
-    // Institution Admin can only view users in their institution
-    if (currentUser.role === USER_ROLES.INSTITUTION_ADMIN) {
-      if (!currentUser.institution_id) {
-        throw new Error('Institution admin does not have an associated institution');
-      }
-      filters.institution_id = currentUser.institution_id;
-      return await this.userDao.listUsers(filters);
+    if (user.role === USER_ROLES.ADMIN) {
+      throw new Error('Admin accounts cannot be deactivated');
     }
+    await this.userDao.updateUser(userId, { isActive: false, deleted_at: new Date() });
 
-    throw new Error('Unauthorized to list users');
+    // Revoke all refresh tokens and sessions
+    await this.authDao.revokeAllRefreshTokens(userId);
+
+    const sessionKeyPattern = generateAuthSessionKey(userId, '*');
+    await cacheService.clear(sessionKeyPattern);
   }
 
-  async getUserById(currentUser, userId) {
+  async listUsers(filters) {
+    return await this.userDao.listUsers(filters);
+  }
+
+  async getUserById(userId) {
     const user = await this.userDao.findUserById(userId);
     if (!user) {
       throw new Error('User not found');
     }
 
-    // Super Admin can view anyone
-    if (currentUser.role === USER_ROLES.SUPER_ADMIN) {
-      return user;
+    return user;
+  }
+
+  async updateUserRole(currentUser, userId, newRole) {
+    const targetUser = await this.userDao.findUserById(userId);
+    if (!targetUser) {
+      throw new Error('User not found');
     }
 
-    // Institution Admin can view users in their institution
-    if (currentUser.role === USER_ROLES.INSTITUTION_ADMIN) {
-      if (user.institution_id !== currentUser.institution_id) {
-        throw new Error('You can only view users in your institution');
-      }
-      return user;
-    }
-
-    // Users can only view their own profile
     if (currentUser.id === userId) {
-      return user;
+      throw new Error('You cannot change your own role');
     }
 
-    throw new Error('Unauthorized to view this user');
+    if (targetUser.role === newRole) {
+      throw new Error('User already has this role');
+    }
+
+    // Admin can change anyone's role to/from ADMIN
+    return await this.userDao.updateUser(userId, { role: newRole });
   }
 
-  async updateUser(currentUser, userId, data) {
-    const user = await this.userDao.findUserById(userId);
-    if (!user) {
-      throw new Error('User not found');
-    }
-
-    // Super Admin can update anyone
-    if (currentUser.role === USER_ROLES.SUPER_ADMIN) {
-      // Super Admin cannot change role to/from SUPER_ADMIN
-      // if either role from or to is SUPER_ADMIN but not both, throw error
-      if (data.role === USER_ROLES.SUPER_ADMIN ^ user.role === USER_ROLES.SUPER_ADMIN) {
-        throw new Error('Cannot modify super admin role');
-      }
-      return await this.userDao.updateUser(userId, data);
-    }
-
-    // Institution Admin can update users in their institution
-    if (currentUser.role === USER_ROLES.INSTITUTION_ADMIN) {
-      if (user.institution_id !== currentUser.institution_id) {
-        throw new Error('You can only update users in your institution');
-      }
-
-      // Institution Admin cannot change roles to INSTITUTION_ADMIN or SUPER_ADMIN
-      if (data.role && data.role !== user.role) {
-        throw new Error('You cannot change user roles');
-      }
-
-      return await this.userDao.updateUser(userId, data);
-    }
-
-    throw new Error('Unauthorized to update this user');
-  }
-
-  async approveUser(currentUser, userId) {
+  async updateUserStatus(currentUser, userId, active) {
     const user = await this.userDao.findUserById(userId);
     if (!user) {
       throw new Error('User not found');
     }
 
     if (user.id === currentUser.id) {
-      throw new Error('You cannot approve yourself');
+      throw new Error('You cannot update your own status');
     }
 
-    // Super Admin can approve anyone
-    if (currentUser.role === USER_ROLES.SUPER_ADMIN) {
-      return await this.userDao.approveUser(userId);
+    if (user.isActive === active) {
+      throw new Error('User status is already set to the requested value');
     }
 
-    // Institution Admin can approve STUDENT in their institution
-    if (currentUser.role === USER_ROLES.INSTITUTION_ADMIN) {
-      if (user.institution_id !== currentUser.institution_id) {
-        throw new Error('You can only approve users in your institution');
-      }
+    let updatedUser;
 
-      if (user.role !== USER_ROLES.STUDENT) {
-        throw new Error('You can only approve students');
-      }
+    if (active) {
+      // If user is being reactivated, clear deleted_at timestamp
+      updatedUser = await this.userDao.updateUser(userId, { isActive: true, deleted_at: null });
+    }
+    else {
+      // If user is being suspended, set deleted_at timestamp and deactivate account
+      updatedUser = await this.userDao.updateUser(userId, { isActive: false, deleted_at: new Date() });
 
-      return await this.userDao.approveUser(userId);
+      // If user is being suspended, revoke all their tokens and sessions
+      await this.authDao.revokeAllRefreshTokens(userId);
+
+      const sessionKeyPattern = generateAuthSessionKey(userId, '*');
+      await cacheService.clear(sessionKeyPattern);
     }
 
-    throw new Error('Unauthorized to approve this user');
+    return updatedUser;
   }
 
-  async blockUser(currentUser, userId, block = true) {
+  async restoreUser(currentUser, userId) {
     const user = await this.userDao.findUserById(userId);
     if (!user) {
       throw new Error('User not found');
     }
+    if (user.isActive) {
+      throw new Error('User is already active');
+    }
 
-    // Cannot block yourself
+    // Cannot restore yourself
     if (currentUser.id === userId) {
-      throw new Error('You cannot block yourself');
+      throw new Error('You cannot restore yourself');
     }
 
-    // Super Admin can block anyone except other SUPER_ADMIN
-    if (currentUser.role === USER_ROLES.SUPER_ADMIN) {
-      if (user.role === USER_ROLES.SUPER_ADMIN) {
-        throw new Error('Cannot block super admin');
-      }
-      return await this.userDao.blockUser(userId, block);
-    }
-
-    // Institution Admin can block users in their institution
-    if (currentUser.role === USER_ROLES.INSTITUTION_ADMIN) {
-      if (user.institution_id !== currentUser.institution_id) {
-        throw new Error('You can only block users in your institution');
-      }
-      if (user.role === USER_ROLES.INSTITUTION_ADMIN) {
-        throw new Error('You cannot block other institution admins');
-      }
-      return await this.userDao.blockUser(userId, block);
-    }
-
-    throw new Error('Unauthorized to block this user');
-  }
-
-  async deleteUser(currentUser, userId) {
-    const user = await this.userDao.findUserById(userId);
-    if (!user) {
-      throw new Error('User not found');
-    }
-
-    // Only Super Admin can delete
-    if (currentUser.role !== USER_ROLES.SUPER_ADMIN) {
-      throw new Error('Only super admin can delete users');
-    }
-
-    // Cannot delete yourself
-    if (currentUser.id === userId) {
-      throw new Error('You cannot delete yourself');
-    }
-
-    // Cannot delete other SUPER_ADMIN
-    if (user.role === USER_ROLES.SUPER_ADMIN) {
-      throw new Error('Cannot delete super admin');
-    }
-
-    return await this.userDao.deleteUser(userId);
+    return await this.userDao.updateUser(userId, { isActive: true, deleted_at: null });
   }
 }
 

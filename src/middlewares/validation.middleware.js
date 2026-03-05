@@ -3,7 +3,9 @@ import { ZodError } from 'zod';
 export const validateRequest = (schema, source = 'body') => {
   return (req, res, next) => {
     try {
-      schema.parse(req[source]);
+      const parsed = schema.parse(req[source]);
+      req.validated = req.validated || {};
+      req.validated[source] = parsed;
       next();
 
     } catch (error) {

@@ -1,13 +1,15 @@
 import express from 'express';
 import UserController from './user.controller.js';
-import { authenticate, checkPermission } from '../../middlewares/auth.middleware.js';
+import { authenticate, authorize } from '../../middlewares/auth.middleware.js';
 import { validateRequest } from '../../middlewares/validation.middleware.js';
 import {
   updateOwnProfileSchema,
   changePasswordSchema,
-  updateUserSchema,
   listUsersQuerySchema,
+  updateUserRoleSchema,
+  updateUserStatusSchema,
 } from './user.validation.js';
+import { USER_ROLES } from '../../constants/user.constants.js';
 
 const router = express.Router();
 const userController = new UserController();
@@ -26,49 +28,54 @@ router.put(
 );
 
 // PATCH /users/me/change-password - Change own password (all authenticated users)
-router.patch(
+router.post(
   '/me/change-password',
   validateRequest(changePasswordSchema),
   userController.changePassword
 );
 
-// GET /users - List users (Institution Admin: own institution, Super Admin: all)
+// DELETE /users/me - own Account Deactivation
+router.delete(
+  '/me',
+  userController.deactivateAccount
+);
+
+// GET /users - List users (Admin only)
 router.get(
   '/',
-  checkPermission('USER', 'viewInstitution'), // Will check viewInstitution or viewAll
+  authorize([USER_ROLES.ADMIN]),
+  validateRequest(listUsersQuerySchema, 'query'),
   userController.listUsers
 );
 
 // GET /users/:id - Get user by ID
-router.get('/:id', userController.getUserById);
-
-// PUT /users/:id - Update user (Institution Admin, Super Admin)
-router.put(
+router.get(
   '/:id',
-  checkPermission('USER', 'update'),
-  validateRequest(updateUserSchema),
-  userController.updateUser
+  authorize([USER_ROLES.ADMIN]),
+  userController.getUserById
 );
 
-// PATCH /users/:id/approve - Approve user
+// PUT /users/:id/role - Update user role (Admin only)
 router.patch(
-  '/:id/approve',
-  checkPermission('USER', 'approve'),
-  userController.approveUser
+  '/:id/role',
+  authorize([USER_ROLES.ADMIN]),
+  validateRequest(updateUserRoleSchema),
+  userController.updateUserRole
 );
 
-// PATCH /users/:id/block - Block/unblock user
+// PATCH /users/:id/status - Suspend/Reactivate user (Admin only)
 router.patch(
-  '/:id/block',
-  checkPermission('USER', 'block'),
-  userController.blockUser
+  '/:id/status',
+  authorize([USER_ROLES.ADMIN]),
+  validateRequest(updateUserStatusSchema),
+  userController.updateUserStatus
 );
 
-// DELETE /users/:id - Delete user (Super Admin only)
-router.delete(
-  '/:id',
-  checkPermission('USER', 'delete'),
-  userController.deleteUser
+// DELETE /users/:id - Restore User (Admin only)
+router.post(
+  '/:id/restore',
+  authorize([USER_ROLES.ADMIN]),
+  userController.restoreUser
 );
 
 export default router;
